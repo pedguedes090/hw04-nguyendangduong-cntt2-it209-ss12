@@ -1,0 +1,66 @@
+name: Build image and deploy to VPS
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    name: Build and publish container image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/app:latest
+
+  deploy-vps:
+    name: Deploy container to VPS over SSH
+    needs: build-image
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_KEY: ${{ secrets.SSH_KEY }}
+      GHCR_USERNAME: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Deploy over SSH
+        if: ${{ env.SSH_HOST != '' && env.SSH_USER != '' && env.SSH_KEY != '' }}
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GHCR_USERNAME: ${{ env.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ env.GHCR_TOKEN }}
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_KEY }}
+          envs: GHCR_USERNAME,GHCR_TOKEN
+          script: |
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            docker pull ghcr.io/${{ github.repository_owner }}/app:latest
+            docker stop app || true
+            docker rm app || true
+            docker run -d --name app -p 8080:8080 ghcr.io/${{ github.repository_owner }}/app:latest
+      - name: Explain missing SSH secrets
+        if: ${{ env.SSH_HOST == '' || env.SSH_USER == '' || env.SSH_KEY == '' }}
+        run: echo "Set SSH_HOST, SSH_USER and SSH_KEY repository secrets to enable VPS deployment."
+
